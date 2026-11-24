@@ -2,7 +2,7 @@
 
 A small floating window that shows what Claude is working on. Each Claude session that's busy gets its own line with the session's title, a bar that fills as Claude works through its task list, and a rough estimate of the time left. When a session finishes, its line turns green for a few seconds and then goes away.
 
-![The widget with four sessions running](docs/screenshot.png)
+![The widget with four sessions running (made-up example sessions)](docs/demo.gif)
 
 > Unofficial. This is a community project and isn't made by, affiliated with, or endorsed by Anthropic. "Claude" is a trademark of Anthropic.
 
