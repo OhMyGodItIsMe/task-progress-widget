@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { Register } from 'claude-code'
 
-import type { Progress } from '../types'
+import type { Progress, Waiting } from '../types'
 
 // One file per session in <home>/.claude/task-progress; the floating widget
 // reads them all and shows a row for each session that is working.
@@ -10,12 +10,35 @@ let stateDir = ''
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function getStateDir($: any): Promise<string> {
   if (!stateDir) {
-    const home =
-      (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
-    if (!home) throw new Error('no home folder')
-    stateDir = `${home.replace(/\\/g, '/')}/.claude/task-progress`
+    let home = ''
+    try {
+      home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
+    } catch (err) {
+      await noteError($, 'env.get', err)
+    }
+    if (home) {
+      stateDir = `${home.replace(/\\/g, '/')}/.claude/task-progress`
+    } else {
+      // The installer puts the mod in <home>/.claude/mods/task-progress-bar.
+      const root = String($.plugin.root).replace(/\\/g, '/')
+      stateDir = `${root.replace(/\/mods\/[^/]+\/?$/, '')}/task-progress`
+    }
   }
   return stateDir
+}
+
+// Keep the last error in the mod's own folder, so a silent failure can be
+// found without a debugger.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function noteError($: any, where: string, err: unknown): Promise<void> {
+  try {
+    await $.fs.write(
+      `${String($.plugin.root).replace(/\\/g, '/')}/last-error.txt`,
+      `${new Date().toISOString()} ${where}: ${String(err)}\n`,
+    )
+  } catch {
+    // nowhere left to report it
+  }
 }
 
 const PROMPT_CHARS = 60
@@ -25,6 +48,11 @@ const MIN_NAME_CHARS = 20
 // The app's task-list tool. Full `items` on any plan change; `advance` / `done`
 // ride along on step transitions.
 const PLAN_TOOL = 'mcp__ccd_turn__update_plan'
+// The app's end-of-turn box; `blocked: true` means the turn ends on a
+// question the person must answer.
+const WRAP_UP_TOOL = 'mcp__ccd_turn__wrap_up'
+// Tools that wait for the person while they run.
+const PERSON_TOOLS = new Set(['AskUserQuestion', 'ExitPlanMode'])
 
 // Guess for a step's length before any history exists (20s).
 const DEFAULT_STEP_MS = 20000
@@ -44,6 +72,7 @@ const empty: Progress = {
   running: false,
   stepStartedAt: 0,
   prompt: '',
+  waiting: '',
 }
 
 const progress = atom(
@@ -90,11 +119,20 @@ async function persist($: any): Promise<void> {
     const sid = String(await $.session.id()).replace(/[^A-Za-z0-9_-]/g, '_')
     await $.fs.write(
       `${await getStateDir($)}/${sid}.json`,
-      JSON.stringify({ ...p, avgStepMs, ts }),
+      JSON.stringify({ ...p, avgStepMs, ts, source: 'desktop' }),
     )
-  } catch {
+  } catch (err) {
     // never let a failed write break a turn
+    await noteError($, 'persist', err)
   }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function setWaiting($: any, waiting: Waiting): Promise<void> {
+  const prev = await read($, progress)
+  if (prev.waiting === waiting) return
+  await update($, progress, p => ({ ...p, waiting }))
+  await persist($)
 }
 
 export const register: Register = on => {
@@ -110,16 +148,33 @@ export const register: Register = on => {
     }
   }
 
+  // The turn ended on a question for the person (wrap_up with `blocked`).
+  let endsOnQuestion = false
+
   on('session.start', async ($, e, next) => {
+    await update($, progress, (p): Progress => ({ ...p, running: false, waiting: '' }))
     await persist($)
     return next(e)
   })
 
   // Heartbeat: refresh the widget's timestamp on every tool call, so the
   // widget can tell "working now" from "finished" by how fresh the file is.
+  // A tool that needs the person (a question, a plan to approve) marks the
+  // session as waiting until it returns. Permission prompts are flagged by
+  // the hook script instead (cli/progress-hook.ps1, Notification event): the
+  // mod can't tell a prompt shown to the person from one auto mode settles.
   on('tool.call', async ($, e, next) => {
     await persist($)
-    return next(e)
+    const tool = String((e as { tool?: unknown }).tool ?? '')
+    if (PERSON_TOOLS.has(tool)) await setWaiting($, 'question')
+    if (tool === WRAP_UP_TOOL) {
+      endsOnQuestion = (e as { blocked?: unknown }).blocked === true
+    }
+    try {
+      return await next(e)
+    } finally {
+      if ((await read($, progress)).waiting) await setWaiting($, '')
+    }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -133,7 +188,8 @@ export const register: Register = on => {
     // keep the last longer message as the row name.
     const isShort =
       typed.length < MIN_NAME_CHARS || typed.split(' ').length <= 3
-    await update($, progress, prev => ({
+    endsOnQuestion = false
+    await update($, progress, (prev): Progress => ({
       total: 0,
       completed: 0,
       label: '',
@@ -142,6 +198,7 @@ export const register: Register = on => {
       stepStartedAt: now,
       prompt:
         isShort && prev.prompt ? prev.prompt : typed.slice(0, PROMPT_CHARS),
+      waiting: '',
     }))
     await persist($)
 
@@ -210,6 +267,7 @@ export const register: Register = on => {
       running: true,
       stepStartedAt,
       prompt: prev.prompt,
+      waiting: prev.waiting,
     }))
     await persist($)
 
@@ -217,7 +275,13 @@ export const register: Register = on => {
   })
 
   on('turn.complete', async ($, e, next) => {
-    await update($, progress, prev => ({ ...prev, running: false }))
+    // A subagent's turn ending is not the session's.
+    if ((e as { agentId?: unknown }).agentId !== undefined) return next(e)
+    await update($, progress, (prev): Progress => ({
+      ...prev,
+      running: false,
+      waiting: endsOnQuestion ? 'answer' : '',
+    }))
     await persist($)
     stopTicker()
     return next(e)

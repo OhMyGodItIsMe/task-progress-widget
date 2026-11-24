@@ -8,7 +8,13 @@ export type Progress = {
   stepStartedAt: number
   // Start of the message that began this turn, as the widget's row name.
   prompt: string
+  // Why the session is waiting on the person, or '' when it isn't:
+  // 'permission' (a tool needs approval), 'question' (Claude asked something
+  // mid-turn), 'answer' (the turn ended on a question for the person).
+  waiting: Waiting
 }
+
+export type Waiting = '' | 'permission' | 'question' | 'answer'
 
 declare module 'claude-code' {
   interface PluginState {

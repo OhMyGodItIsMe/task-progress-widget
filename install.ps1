@@ -5,9 +5,11 @@
 # (used for testing).
 
 param([string]$ClaudeHome = (Join-Path $env:USERPROFILE ".claude"),
-      [switch]$NoShortcuts, [switch]$NoLaunch)
+      [switch]$NoShortcuts, [switch]$NoLaunch, [switch]$NoTerminalHooks)
 
 $ErrorActionPreference = "Stop"
+# Windows PowerShell 5.1 otherwise writes arrays as {"value": [...], "Count": n}.
+Remove-TypeData System.Array -ErrorAction SilentlyContinue
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $src = Join-Path $here "task-progress-bar"
 $dest = Join-Path $ClaudeHome "mods\task-progress-bar"
@@ -21,9 +23,13 @@ Say ""
 Say "Installing the Claude progress widget..."
 Say ""
 
-# 1. Python with tkinter (the widget's window toolkit).
-$pyOk = $false
+# 1. The widget: the ready-made .exe from the release download, or else
+#    Python with tkinter (the widget's window toolkit).
+$hasExe = Test-Path (Join-Path $src "widget\TaskProgressWidget.exe")
+$pyOk = $hasExe
+if ($hasExe) { Say "[ok] Using the included TaskProgressWidget.exe (no Python needed)" }
 foreach ($py in @("py", "python")) {
+    if ($pyOk) { break }
     try {
         $pyArgs = @("-c", "import tkinter")
         if ($py -eq "py") { $pyArgs = @("-3") + $pyArgs }
@@ -33,19 +39,27 @@ foreach ($py in @("py", "python")) {
 }
 if (-not $pyOk) {
     Say "Python 3 was not found (or it has no tkinter)."
-    Say "Install it from https://www.python.org/downloads/ (keep the default options),"
+    Say "Either download the release ZIP, which includes a ready-made .exe:"
+    Say "    https://github.com/OhMyGodItIsMe/task-progress-widget/releases/latest"
+    Say "or install Python from https://www.python.org/downloads/ (default options),"
     Say "then run this installer again."
     exit 1
 }
-Say "[ok] Python found"
+if (-not $hasExe) { Say "[ok] Python found" }
 
 # 2. Close a running widget so its files can be replaced.
-Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe'" |
-    Where-Object { $_.CommandLine -like '*progress_widget*' } |
+Get-CimInstance Win32_Process -Filter "Name='pythonw.exe' OR Name='python.exe' OR Name='TaskProgressWidget.exe'" |
+    Where-Object { $_.CommandLine -like '*progress_widget*' -or $_.Name -eq 'TaskProgressWidget.exe' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-# 3. Copy the mod and widget.
-if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+# 3. Copy the mod and widget. Windows keeps a closing .exe locked for a
+#    moment, so retry the removal briefly.
+if (Test-Path $dest) {
+    for ($i = 1; $i -le 10; $i++) {
+        try { Remove-Item $dest -Recurse -Force -ErrorAction Stop; break }
+        catch { if ($i -eq 10) { throw "Couldn't replace $dest (is the widget still running?): $_" }; Start-Sleep -Milliseconds 500 }
+    }
+}
 New-Item -ItemType Directory -Force (Split-Path $dest) | Out-Null
 Copy-Item $src $dest -Recurse
 New-Item -ItemType Directory -Force (Join-Path $ClaudeHome "task-progress") | Out-Null
@@ -81,9 +95,42 @@ if ($current -and $current.Value -and $current.Value -ne $pluginDir) {
 } else {
     if ($current) { $current.Value = $pluginDir }
     else { $cfg.env | Add-Member -NotePropertyName CLAUDE_CODE_PLUGIN_DIRS -NotePropertyValue $pluginDir }
-    [IO.File]::WriteAllText($settings, ($cfg | ConvertTo-Json -Depth 50), $utf8)
-    Say "[ok] Mod turned on in $settings"
+    Say "[ok] Mod turned on (Claude desktop app)"
 }
+
+# 4b. Hooks for Claude Code in a terminal. Any earlier copy of ours is
+# replaced; other hooks are left as they are.
+$hookScript = Join-Path $dest "cli\progress-hook.ps1"
+$hookEvents = [ordered]@{
+    UserPromptSubmit = $null; PreToolUse = "AskUserQuestion|ExitPlanMode"; PostToolUse = "*"
+    TaskCreated = $null; TaskCompleted = $null; Stop = $null; SessionEnd = $null
+    Notification = "permission_prompt|elicitation_dialog|agent_needs_input"
+}
+if (-not ($cfg.PSObject.Properties.Name -contains "hooks")) {
+    $cfg | Add-Member -NotePropertyName hooks -NotePropertyValue (New-Object PSObject)
+}
+foreach ($ev in $hookEvents.Keys) {
+    $groups = @()
+    if ($cfg.hooks.PSObject.Properties.Name -contains $ev) {
+        $groups = @($cfg.hooks.$ev | Where-Object {
+            -not (@($_.hooks) | Where-Object { (@($_.args) -join " ") -like "*progress-hook.ps1*" })
+        })
+    }
+    if (-not $NoTerminalHooks) {
+        $group = [ordered]@{}
+        if ($hookEvents[$ev]) { $group.matcher = $hookEvents[$ev] }
+        $group.hooks = @([ordered]@{
+            type = "command"; command = "powershell.exe"
+            args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $hookScript, $ev)
+            async = $true
+        })
+        $groups += [pscustomobject]$group
+    }
+    if ($cfg.hooks.PSObject.Properties.Name -contains $ev) { $cfg.hooks.$ev = $groups }
+    elseif ($groups.Count) { $cfg.hooks | Add-Member -NotePropertyName $ev -NotePropertyValue $groups }
+}
+[IO.File]::WriteAllText($settings, ($cfg | ConvertTo-Json -Depth 50), $utf8)
+if (-not $NoTerminalHooks) { Say "[ok] Hooks added for Claude Code in a terminal" }
 
 # 5. Desktop and startup shortcuts.
 $launcher = Join-Path $dest "widget\Open Claude Progress.vbs"

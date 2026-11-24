@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .claude-plugin/types/
 node_modules/
+*.exe
+build/
+dist/
