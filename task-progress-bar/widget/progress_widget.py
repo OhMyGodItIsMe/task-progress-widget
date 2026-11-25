@@ -42,7 +42,7 @@ THEMES = {
 KEY = "#010203"  # made transparent: gives the card rounded corners
 
 TITLE = "Claude progress"
-VERSION = "0.2.1"  # keep in step with .claude-plugin/plugin.json
+VERSION = "0.2.2"  # keep in step with .claude-plugin/plugin.json
 AUTHOR = "OhMyGodItIsMe"
 PROJECT_URL = "https://github.com/OhMyGodItIsMe/task-progress-widget"
 W = 320
@@ -160,12 +160,34 @@ def point_on_a_screen(x: int, y: int) -> bool:
     return bool(u32.MonitorFromPoint(wt.POINT(int(x), int(y)), 0))
 
 
+def sound_file(kind: str) -> str:
+    """The widget's own sound for "waiting" or "finished", or '' if missing.
+
+    Looked up inside the .exe (PyInstaller unpacks bundled files to
+    sys._MEIPASS) and next to the script or .exe, in a sounds folder.
+    """
+    name = "needs_you.wav" if kind == "waiting" else "finished.wav"
+    here = os.path.dirname(os.path.abspath(
+        sys.executable if getattr(sys, "frozen", False) else __file__))
+    for base in (getattr(sys, "_MEIPASS", ""), here):
+        path = os.path.join(base, "sounds", name)
+        if base and os.path.isfile(path):
+            return path
+    return ""
+
+
 def beep(kind: str) -> None:
     if sys.platform != "win32":
         return
     import winsound
-    # Asterisk for "finished", exclamation for "needs you".
-    winsound.MessageBeep(0x30 if kind == "waiting" else 0x40)
+    path = sound_file(kind)
+    if path:
+        # Our own chimes, so they don't sound like every other app's alert.
+        winsound.PlaySound(path, winsound.SND_FILENAME | winsound.SND_ASYNC
+                           | winsound.SND_NODEFAULT)
+    else:
+        # Asterisk for "finished", exclamation for "needs you".
+        winsound.MessageBeep(0x30 if kind == "waiting" else 0x40)
 
 
 def already_running() -> bool:

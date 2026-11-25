@@ -25,6 +25,7 @@ if ($LASTEXITCODE -ne 0) { throw "The mod failed 'claude plugin validate'; fix i
 Write-Host "Building TaskProgressWidget.exe (v$version)..."
 python -m PyInstaller --noconfirm --clean --onefile --windowed --name TaskProgressWidget `
     --distpath (Join-Path $build "exe") --workpath (Join-Path $build "work") --specpath $build `
+    --add-data "$(Join-Path $root 'task-progress-bar\widget\sounds');sounds" `
     (Join-Path $root "task-progress-bar\widget\progress_widget.py") | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed" }
 

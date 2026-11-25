@@ -31,7 +31,7 @@ Windows may warn that the .exe is from an unknown publisher, because it isn't co
 - Click a line to jump to that session in the Claude app. (Terminal sessions, marked with ›, can't be opened this way.)
 - Drag it anywhere to move it. It reopens where you left it.
 - Drag the bottom-right corner, or hold Ctrl and scroll over it, to resize it.
-- Right-click it for settings: a sound when a session finishes or needs you, the theme (match Windows, dark, or light), and resetting its size and position.
+- Right-click it for settings: its own sound when a session finishes (a soft chime) or needs you (a rising "ding-DING"), the theme (match Windows, dark, or light), and resetting its size and position.
 - If Claude isn't using a task list for a job (quick questions, for example), the line shows a block sliding back and forth instead of a filling bar. In a terminal, Claude often skips the task list for small jobs, so expect the sliding block more often there.
 
 When Claude controls your computer, the app minimizes other windows, this one included. The widget comes straight back, and for about a minute it ignores clicks and stays out of screen captures so it can't get in Claude's way. After that it behaves normally again.
